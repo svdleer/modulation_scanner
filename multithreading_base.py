@@ -1,5 +1,3 @@
-#!/home/svdleer/python/venv/bin/python3
-
 import os
 import logging
 import threading
@@ -56,51 +54,31 @@ class MultithreadingBase:
 
     def _init_logging(self):
         """Configure logging system"""
-        import sys
-        
         self.logger.setLevel(logging.INFO)
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         
         # Clear existing handlers
         for handler in self.logger.handlers[:]:
             self.logger.removeHandler(handler)
-        
-        # Create a custom filter for INFO and DEBUG to stdout
-        class InfoFilter(logging.Filter):
-            def filter(self, record):
-                return record.levelno <= logging.INFO
-        
-        # Create a custom filter for WARNING and above to stderr
-        class WarningFilter(logging.Filter):
-            def filter(self, record):
-                return record.levelno >= logging.WARNING
-        
-        # Add stdout handler for INFO and DEBUG
-        stdout_handler = logging.StreamHandler(sys.stdout)
-        stdout_handler.setFormatter(formatter)
-        stdout_handler.addFilter(InfoFilter())
-        self.logger.addHandler(stdout_handler)
-        
-        # Add stderr handler for WARNING, ERROR, and CRITICAL
-        stderr_handler = logging.StreamHandler(sys.stderr)
-        stderr_handler.setFormatter(formatter)
-        stderr_handler.addFilter(WarningFilter())
-        self.logger.addHandler(stderr_handler)
+            
+        # Add console handler
+        ch = logging.StreamHandler()
+        ch.setFormatter(formatter)
+        self.logger.addHandler(ch)
 
     def _init_mysql_pools(self):
         """Initialize MySQL connection pools for access and reporting"""
         # ACCESS pool (destination)
         access_cfg = self.config.get('ACCESS')
-        if access_cfg and access_cfg.get('HOST'):
+        if access_cfg:
             try:
-                password = self._decrypt_password(access_cfg.get('PASSWORD', ''))
                 self.access_pool = pooling.MySQLConnectionPool(
                     pool_name=f"{self.__class__.__name__}_access_pool",
                     pool_size=access_cfg.get('POOL_SIZE', 10),
                     host=access_cfg.get('HOST'),
                     database=access_cfg.get('DATABASE'),
                     user=access_cfg.get('USER'),
-                    password=password.strip() if password else "",
+                    password=self._decrypt_password(access_cfg.get('PASSWORD', '')).strip(),
                     autocommit=True,
                 )
                 self.logger.info("ACCESS MySQL connection pool initialized")
@@ -108,20 +86,19 @@ class MultithreadingBase:
                 self.logger.error(f"ACCESS pool initialization failed: {str(e)}")
                 raise
         else:
-            self.logger.warning("ACCESS configuration missing or incomplete")
+            self.logger.warning("ACCESS configuration missing")
 
         # REPORTING pool (source)
         reporting_cfg = self.config.get('REPORTING')
-        if reporting_cfg and reporting_cfg.get('HOST'):
+        if reporting_cfg:
             try:
-                password = self._decrypt_password(reporting_cfg.get('PASSWORD', ''))
                 self.reporting_pool = pooling.MySQLConnectionPool(
                     pool_name=f"{self.__class__.__name__}_reporting_pool",
                     pool_size=reporting_cfg.get('POOL_SIZE', 5),
                     host=reporting_cfg.get('HOST'),
                     database=reporting_cfg.get('DATABASE'),
                     user=reporting_cfg.get('USER'),
-                    password=password.strip() if password else "",
+                    password=self._decrypt_password(reporting_cfg.get('PASSWORD', '')).strip(),
                     autocommit=True,
                 )
                 self.logger.info("REPORTING MySQL connection pool initialized")
@@ -129,7 +106,7 @@ class MultithreadingBase:
                 self.logger.error(f"REPORTING pool initialization failed: {str(e)}")
                 raise
         else:
-            self.logger.warning("REPORTING configuration missing or incomplete")
+            self.logger.warning("REPORTING configuration missing")
 
     def _init_threading(self):
         """Initialize threading components"""
@@ -139,19 +116,13 @@ class MultithreadingBase:
 
     def _decrypt_password(self, encrypted_password):
         """Decrypt passwords using Fernet key from environment or fallback to hardcoded key"""
-        # Handle None or empty password
-        if not encrypted_password:
-            self.logger.warning("No password provided for decryption")
-            return ""
-            
-        # If password doesn't start with Fernet prefix, assume it's plain text
-        if not encrypted_password.startswith('gAAAAAB'):
-            return encrypted_password
+        if not encrypted_password or not encrypted_password.startswith('gAAAAAB'):
+            return encrypted_password or ""
 
         try:
             fernet_key = self.config.get('FERNET_KEY') or os.getenv('FERNET_KEY')
             if not fernet_key:
-                self.logger.warning("No FERNET_KEY found in environment, returning encrypted password as-is")
+                self.logger.warning("No FERNET_KEY found in environment, password decryption may fail")
                 return encrypted_password
             
             fernet = Fernet(fernet_key.encode('utf-8'))

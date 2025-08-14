@@ -20,7 +20,7 @@ if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) {
 }
 
 // Load report data
-$json_file = $REPORT_DIR . "/reports/modulation_report_{$report_date}_web.json";
+$json_file = $REPORT_DIR . "/modulation_report_{$report_date}_web.json";
 
 if (!file_exists($json_file)) {
     die("Report for {$report_date} not found. Please generate the report first.");
@@ -39,171 +39,241 @@ if (!$report_data) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Modulation Report - <?= htmlspecialchars($report_date) ?></title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        'primary': '#667eea',
-                        'secondary': '#764ba2'
-                    }
-                }
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #eee;
+        }
+        .header h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .summary-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .card h3 {
+            margin: 0 0 10px 0;
+            font-size: 1.2em;
+        }
+        .card .value {
+            font-size: 2em;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        .card .label {
+            opacity: 0.9;
+            font-size: 0.9em;
+        }
+        
+        .device-summary {
+            margin-bottom: 30px;
+        }
+        .device-summary h2 {
+            color: #333;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        .device-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 15px;
+        }
+        .device-card {
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            padding: 15px;
+            background-color: #f9f9f9;
+        }
+        .device-card h4 {
+            margin: 0 0 10px 0;
+            color: #667eea;
+        }
+        
+        .top-hoppers {
+            margin-bottom: 30px;
+        }
+        .top-hoppers h2 {
+            color: #333;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #667eea;
+            color: white;
+            font-weight: bold;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 5px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            border-radius: 10px;
+            transition: width 0.3s ease;
+        }
+        .qam64 { background-color: #4CAF50; }
+        .qam16 { background-color: #FF9800; }
+        .qpsk { background-color: #f44336; }
+        
+        .date-selector {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .date-selector input {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin: 0 10px;
+        }
+        .date-selector button {
+            padding: 8px 16px;
+            background-color: #667eea;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .date-selector button:hover {
+            background-color: #5a67d8;
+        }
+        
+        .generated-info {
+            text-align: center;
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+        }
+        
+        @media (max-width: 768px) {
+            .summary-cards {
+                grid-template-columns: 1fr;
+            }
+            .device-grid {
+                grid-template-columns: 1fr;
+            }
+            table {
+                font-size: 0.9em;
+            }
+            th, td {
+                padding: 8px;
             }
         }
-    </script>
+    </style>
 </head>
-<body class="bg-gray-50 min-h-screen" x-data="modulationReport()">
-    <!-- Header -->
-    <div class="bg-gradient-to-r from-primary to-secondary text-white shadow-lg">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-            <div class="flex flex-col sm:flex-row justify-between items-center">
-                <div class="flex items-center mb-4 sm:mb-0">
-                    <!-- VodafoneZiggo Logo -->
-                    <div class="mr-6">
-                        <svg width="60" height="60" viewBox="0 0 100 100" class="text-white">
-                            <!-- VodafoneZiggo inspired logo -->
-                            <circle cx="50" cy="50" r="45" fill="none" stroke="currentColor" stroke-width="3"/>
-                            <circle cx="35" cy="35" r="12" fill="#E60000"/>
-                            <circle cx="65" cy="35" r="12" fill="currentColor"/>
-                            <path d="M25 65 Q50 85 75 65" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
-                            <text x="50" y="75" text-anchor="middle" font-size="10" fill="currentColor" font-weight="bold">VZ</text>
-                        </svg>
-                    </div>
-                    <div>
-                        <h1 class="text-3xl font-bold">Modulation Report</h1>
-                        <p class="text-blue-100">Network Performance Analytics - VodafoneZiggo</p>
-                    </div>
-                </div>
-                
-                <!-- Date Selector -->
-                <div class="flex items-center space-x-4">
-                    <form method="GET" class="flex items-center space-x-2">
-                        <i class="fas fa-calendar-alt"></i>
-                        <input type="date" name="date" value="<?= htmlspecialchars($report_date) ?>" 
-                               class="px-3 py-2 rounded-lg text-gray-800 border border-blue-200 focus:ring-2 focus:ring-blue-300">
-                        <button type="submit" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg font-medium transition-colors">
-                            <i class="fas fa-sync-alt mr-2"></i>Load
-                        </button>
-                    </form>
-                </div>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Modulation Report</h1>
+            <div class="date-selector">
+                <form method="GET">
+                    <input type="date" name="date" value="<?= htmlspecialchars($report_date) ?>">
+                    <button type="submit">Load Report</button>
+                </form>
             </div>
         </div>
-    </div>
-
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
         <!-- Summary Cards -->
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-            <div class="bg-gradient-to-r from-blue-500 to-blue-600 p-6 rounded-xl shadow-lg text-white transform hover:scale-105 transition-transform">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-blue-100 text-sm font-medium">Total Upstreams</p>
-                        <p class="text-3xl font-bold"><?= number_format($report_data['total_upstreams']) ?></p>
-                        <p class="text-blue-200 text-xs">Monitored Interfaces</p>
-                    </div>
-                    <i class="fas fa-network-wired text-3xl text-blue-200"></i>
-                </div>
+        <div class="summary-cards">
+            <div class="card">
+                <h3>Total Upstreams</h3>
+                <div class="value"><?= number_format($report_data['total_upstreams']) ?></div>
+                <div class="label">Monitored Interfaces</div>
             </div>
-
-            <div class="bg-gradient-to-r from-purple-500 to-purple-600 p-6 rounded-xl shadow-lg text-white transform hover:scale-105 transition-transform">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-purple-100 text-sm font-medium">Total Hops</p>
-                        <p class="text-3xl font-bold"><?= number_format($report_data['total_hops']) ?></p>
-                        <p class="text-purple-200 text-xs">Modulation Changes</p>
-                    </div>
-                    <i class="fas fa-exchange-alt text-3xl text-purple-200"></i>
-                </div>
+            <div class="card">
+                <h3>Total Hops</h3>
+                <div class="value"><?= number_format($report_data['total_hops']) ?></div>
+                <div class="label">Modulation Changes</div>
             </div>
-
             <?php if (isset($report_data['summary']['modulation_distribution'])): ?>
-            <div class="bg-gradient-to-r from-green-500 to-green-600 p-6 rounded-xl shadow-lg text-white transform hover:scale-105 transition-transform">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-green-100 text-sm font-medium">QAM64 Usage</p>
-                        <p class="text-3xl font-bold"><?= $report_data['summary']['modulation_distribution']['overall_qam64_pct'] ?>%</p>
-                        <p class="text-green-200 text-xs">Overall Average</p>
-                    </div>
-                    <i class="fas fa-signal text-3xl text-green-200"></i>
-                </div>
+            <div class="card">
+                <h3>QAM64 Usage</h3>
+                <div class="value"><?= $report_data['summary']['modulation_distribution']['overall_qam64_pct'] ?>%</div>
+                <div class="label">Overall Average</div>
             </div>
-
-            <div class="bg-gradient-to-r from-orange-500 to-orange-600 p-6 rounded-xl shadow-lg text-white transform hover:scale-105 transition-transform">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-orange-100 text-sm font-medium">QAM16 Usage</p>
-                        <p class="text-3xl font-bold"><?= $report_data['summary']['modulation_distribution']['overall_qam16_pct'] ?>%</p>
-                        <p class="text-orange-200 text-xs">Overall Average</p>
-                    </div>
-                    <i class="fas fa-wifi text-3xl text-orange-200"></i>
-                </div>
+            <div class="card">
+                <h3>QAM16 Usage</h3>
+                <div class="value"><?= $report_data['summary']['modulation_distribution']['overall_qam16_pct'] ?>%</div>
+                <div class="label">Overall Average</div>
             </div>
             <?php endif; ?>
         </div>
 
         <!-- Device Type Summary -->
         <?php if (isset($report_data['summary']['by_device_type']) && !empty($report_data['summary']['by_device_type'])): ?>
-        <div class="mb-8">
-            <div class="flex items-center mb-6">
-                <i class="fas fa-server text-2xl text-primary mr-3"></i>
-                <h2 class="text-2xl font-bold text-gray-800">Summary by Device Type</h2>
-            </div>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div class="device-summary">
+            <h2>Summary by Device Type</h2>
+            <div class="device-grid">
                 <?php foreach ($report_data['summary']['by_device_type'] as $device): ?>
-                <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-100 hover:shadow-xl transition-shadow">
-                    <div class="flex items-center mb-4">
-                        <div class="bg-primary text-white p-3 rounded-lg mr-4">
-                            <i class="fas fa-microchip text-xl"></i>
-                        </div>
-                        <h3 class="text-xl font-bold text-gray-800"><?= htmlspecialchars($device['device_type']) ?></h3>
-                    </div>
+                <div class="device-card">
+                    <h4><?= htmlspecialchars($device['device_type']) ?></h4>
+                    <p><strong><?= number_format($device['total_upstreams']) ?></strong> upstreams</p>
+                    <p><strong><?= number_format($device['total_hops']) ?></strong> total hops</p>
                     
-                    <div class="space-y-2 mb-4">
-                        <div class="flex justify-between">
-                            <span class="text-gray-600">Upstreams:</span>
-                            <span class="font-semibold"><?= number_format($device['total_upstreams']) ?></span>
-                        </div>
-                        <div class="flex justify-between">
-                            <span class="text-gray-600">Total Hops:</span>
-                            <span class="font-semibold text-purple-600"><?= number_format($device['total_hops']) ?></span>
+                    <div>
+                        QAM64: <?= $device['avg_qam64_pct'] ?>%
+                        <div class="progress-bar">
+                            <div class="progress-fill qam64" style="width: <?= $device['avg_qam64_pct'] ?>%"></div>
                         </div>
                     </div>
                     
-                    <div class="space-y-3">
-                        <div>
-                            <div class="flex justify-between mb-1">
-                                <span class="text-sm font-medium text-green-700">QAM64</span>
-                                <span class="text-sm font-medium text-green-700"><?= $device['avg_qam64_pct'] ?>%</span>
-                            </div>
-                            <div class="w-full bg-gray-200 rounded-full h-2">
-                                <div class="bg-green-500 h-2 rounded-full transition-all duration-300" 
-                                     style="width: <?= $device['avg_qam64_pct'] ?>%"></div>
-                            </div>
+                    <div>
+                        QAM16: <?= $device['avg_qam16_pct'] ?>%
+                        <div class="progress-bar">
+                            <div class="progress-fill qam16" style="width: <?= $device['avg_qam16_pct'] ?>%"></div>
                         </div>
-                        
-                        <div>
-                            <div class="flex justify-between mb-1">
-                                <span class="text-sm font-medium text-orange-700">QAM16</span>
-                                <span class="text-sm font-medium text-orange-700"><?= $device['avg_qam16_pct'] ?>%</span>
-                            </div>
-                            <div class="w-full bg-gray-200 rounded-full h-2">
-                                <div class="bg-orange-500 h-2 rounded-full transition-all duration-300" 
-                                     style="width: <?= $device['avg_qam16_pct'] ?>%"></div>
-                            </div>
-                        </div>
-                        
-                        <div>
-                            <div class="flex justify-between mb-1">
-                                <span class="text-sm font-medium text-red-700">QPSK</span>
-                                <span class="text-sm font-medium text-red-700"><?= $device['avg_qpsk_pct'] ?>%</span>
-                            </div>
-                            <div class="w-full bg-gray-200 rounded-full h-2">
-                                <div class="bg-red-500 h-2 rounded-full transition-all duration-300" 
-                                     style="width: <?= $device['avg_qpsk_pct'] ?>%"></div>
-                            </div>
+                    </div>
+                    
+                    <div>
+                        QPSK: <?= $device['avg_qpsk_pct'] ?>%
+                        <div class="progress-bar">
+                            <div class="progress-fill qpsk" style="width: <?= $device['avg_qpsk_pct'] ?>%"></div>
                         </div>
                     </div>
                 </div>
@@ -212,292 +282,64 @@ if (!$report_data) {
         </div>
         <?php endif; ?>
 
-        <!-- Top Hoppers Section -->
-        <div class="bg-white rounded-xl shadow-lg border border-gray-100 mb-8">
-            <div class="p-6 border-b border-gray-200">
-                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between">
-                    <div class="flex items-center mb-4 sm:mb-0">
-                        <i class="fas fa-trophy text-2xl text-yellow-500 mr-3"></i>
-                        <h2 class="text-2xl font-bold text-gray-800">Top Hoppers</h2>
-                        <span class="ml-2 px-2 py-1 bg-yellow-100 text-yellow-800 text-xs rounded-full">
-                            Most Modulation Changes
-                        </span>
-                    </div>
-                    
-                    <!-- Search and Filters -->
-                    <div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-4">
-                        <div class="relative">
-                            <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
-                            <input type="text" x-model="searchTerm" placeholder="Search CMTS or Upstream..." 
-                                   class="pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent w-full sm:w-64">
-                        </div>
-                        <select x-model="deviceFilter" class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
-                            <option value="">All Devices</option>
-                            <option value="CCAP0">CCAP0xx</option>
-                            <option value="CCAP1">CCAP1xx</option>
-                            <option value="CCAP2">CCAP2xx</option>
-                        </select>
-                        <select x-model="hopFilter" class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
-                            <option value="">All Hops</option>
-                            <option value="high">High (>50)</option>
-                            <option value="medium">Medium (10-50)</option>
-                            <option value="low">Low (<10)</option>
-                        </select>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Table -->
-            <div class="overflow-x-auto">
-                <table class="min-w-full">
-                    <thead class="bg-gradient-to-r from-primary to-secondary text-white">
-                        <tr>
-                            <th class="px-6 py-4 text-left text-sm font-semibold cursor-pointer hover:bg-blue-700 transition-colors" 
-                                @click="sortBy('cmts')">
-                                <div class="flex items-center">
-                                    CMTS
-                                    <i class="fas fa-sort ml-2 opacity-50"></i>
-                                </div>
-                            </th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold cursor-pointer hover:bg-blue-700 transition-colors" 
-                                @click="sortBy('upstream')">
-                                <div class="flex items-center">
-                                    Upstream
-                                    <i class="fas fa-sort ml-2 opacity-50"></i>
-                                </div>
-                            </th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold cursor-pointer hover:bg-blue-700 transition-colors" 
-                                @click="sortBy('hops')">
-                                <div class="flex items-center">
-                                    Hops
-                                    <i class="fas fa-sort ml-2 opacity-50"></i>
-                                </div>
-                            </th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold">QAM64 %</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold">QAM16 %</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold">QPSK %</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold cursor-pointer hover:bg-blue-700 transition-colors" 
-                                @click="sortBy('measurements')">
-                                <div class="flex items-center">
-                                    Measurements
-                                    <i class="fas fa-sort ml-2 opacity-50"></i>
-                                </div>
-                            </th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-gray-200">
-                        <template x-for="(row, index) in filteredData" :key="index">
-                            <tr class="hover:bg-gray-50 transition-colors cursor-pointer" 
-                                @click="selectedRow = selectedRow === index ? null : index"
-                                :class="selectedRow === index ? 'bg-blue-50 border-l-4 border-primary' : ''">
-                                <td class="px-6 py-4 whitespace-nowrap">
-                                    <div class="flex items-center">
-                                        <div class="w-3 h-3 rounded-full mr-3" 
-                                             :class="getDeviceColor(row.cmts)"></div>
-                                        <span class="font-medium text-gray-900" x-text="row.cmts"></span>
-                                    </div>
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-gray-900" x-text="row.upstream"></td>
-                                <td class="px-6 py-4 whitespace-nowrap">
-                                    <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium"
-                                          :class="getHopBadgeColor(row.hops)"
-                                          x-text="row.hops">
-                                    </span>
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap">
-                                    <div class="flex items-center space-x-2">
-                                        <span class="font-medium text-green-700" x-text="row.qam64_pct + '%'"></span>
-                                        <div class="w-16 bg-gray-200 rounded-full h-2">
-                                            <div class="bg-green-500 h-2 rounded-full transition-all duration-300" 
-                                                 :style="`width: ${row.qam64_pct}%`"></div>
-                                        </div>
-                                    </div>
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap">
-                                    <div class="flex items-center space-x-2">
-                                        <span class="font-medium text-orange-700" x-text="row.qam16_pct + '%'"></span>
-                                        <div class="w-16 bg-gray-200 rounded-full h-2">
-                                            <div class="bg-orange-500 h-2 rounded-full transition-all duration-300" 
-                                                 :style="`width: ${row.qam16_pct}%`"></div>
-                                        </div>
-                                    </div>
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap">
-                                    <div class="flex items-center space-x-2">
-                                        <span class="font-medium text-red-700" x-text="row.qpsk_pct + '%'"></span>
-                                        <div class="w-16 bg-gray-200 rounded-full h-2">
-                                            <div class="bg-red-500 h-2 rounded-full transition-all duration-300" 
-                                                 :style="`width: ${row.qpsk_pct}%`"></div>
-                                        </div>
-                                    </div>
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-gray-900" x-text="new Intl.NumberFormat().format(row.measurements)"></td>
-                            </tr>
-                        </template>
-                        
-                        <template x-if="filteredData.length === 0">
-                            <tr>
-                                <td colspan="7" class="px-6 py-12 text-center text-gray-500">
-                                    <i class="fas fa-search text-4xl mb-4 opacity-50"></i>
-                                    <p class="text-lg">No results found</p>
-                                    <p class="text-sm">Try adjusting your search or filter criteria</p>
-                                </td>
-                            </tr>
-                        </template>
-                    </tbody>
-                </table>
-            </div>
-            
-            <!-- Pagination -->
-            <div class="px-6 py-4 border-t border-gray-200">
-                <div class="flex items-center justify-between">
-                    <div class="text-sm text-gray-700">
-                        Showing <span x-text="((currentPage - 1) * itemsPerPage) + 1"></span> to 
-                        <span x-text="Math.min(currentPage * itemsPerPage, filteredData.length)"></span> of 
-                        <span x-text="filteredData.length"></span> results
-                    </div>
-                    <div class="flex space-x-2">
-                        <button @click="currentPage = Math.max(1, currentPage - 1)" 
-                                :disabled="currentPage === 1"
-                                :class="currentPage === 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100'"
-                                class="px-3 py-2 border border-gray-300 rounded-lg transition-colors">
-                            <i class="fas fa-chevron-left"></i>
-                        </button>
-                        <span class="px-4 py-2 bg-primary text-white rounded-lg" x-text="currentPage"></span>
-                        <button @click="currentPage = Math.min(Math.ceil(filteredData.length / itemsPerPage), currentPage + 1)" 
-                                :disabled="currentPage >= Math.ceil(filteredData.length / itemsPerPage)"
-                                :class="currentPage >= Math.ceil(filteredData.length / itemsPerPage) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100'"
-                                class="px-3 py-2 border border-gray-300 rounded-lg transition-colors">
-                            <i class="fas fa-chevron-right"></i>
-                        </button>
-                    </div>
-                </div>
-            </div>
+        <!-- Top Hoppers Table -->
+        <div class="top-hoppers">
+            <h2>Top Hoppers (Interfaces with Most Modulation Changes)</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>CMTS</th>
+                        <th>Upstream</th>
+                        <th>Hops</th>
+                        <th>QAM64 %</th>
+                        <th>QAM16 %</th>
+                        <th>QPSK %</th>
+                        <th>Measurements</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($report_data['summary']['top_hoppers'] as $row): ?>
+                    <tr>
+                        <td><?= htmlspecialchars($row['cmts']) ?></td>
+                        <td><?= htmlspecialchars($row['upstream']) ?></td>
+                        <td><strong><?= $row['hops'] ?></strong></td>
+                        <td>
+                            <span style="color: #4CAF50"><?= $row['qam64_pct'] ?>%</span>
+                            <div class="progress-bar" style="width: 50px; height: 8px; display: inline-block; margin-left: 5px;">
+                                <div class="progress-fill qam64" style="width: <?= $row['qam64_pct'] ?>%"></div>
+                            </div>
+                        </td>
+                        <td>
+                            <span style="color: #FF9800"><?= $row['qam16_pct'] ?>%</span>
+                            <div class="progress-bar" style="width: 50px; height: 8px; display: inline-block; margin-left: 5px;">
+                                <div class="progress-fill qam16" style="width: <?= $row['qam16_pct'] ?>%"></div>
+                            </div>
+                        </td>
+                        <td>
+                            <span style="color: #f44336"><?= $row['qpsk_pct'] ?>%</span>
+                            <div class="progress-bar" style="width: 50px; height: 8px; display: inline-block; margin-left: 5px;">
+                                <div class="progress-fill qpsk" style="width: <?= $row['qpsk_pct'] ?>%"></div>
+                            </div>
+                        </td>
+                        <td><?= number_format($row['measurements']) ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
         </div>
 
-        <!-- Footer -->
-        <div class="bg-white rounded-xl shadow-lg border border-gray-100 p-6 text-center text-gray-600">
-            <div class="flex items-center justify-center space-x-6 mb-4">
-                <div class="flex items-center">
-                    <i class="fas fa-clock text-primary mr-2"></i>
-                    <span>Generated: <?= date('Y-m-d H:i:s', strtotime($report_data['generated_at'])) ?></span>
-                </div>
-                <div class="flex items-center">
-                    <i class="fas fa-calendar text-primary mr-2"></i>
-                    <span>Data for: <?= htmlspecialchars($report_data['report_date']) ?></span>
-                </div>
-                <div class="flex items-center">
-                    <i class="fas fa-sync-alt text-primary mr-2"></i>
-                    <span class="text-xs" x-show="autoRefresh">Auto-refresh: ON</span>
-                </div>
-            </div>
-            <div class="text-sm text-gray-500 border-t pt-4">
-                <span>Expert Engineer Access Engineering | Network & Technology - Access & Transport</span><br>
-                <span class="text-xs">© <?= date('Y') ?> VodafoneZiggo - Automated Network Monitoring System</span>
-            </div>
+        <div class="generated-info">
+            Report generated at: <?= date('Y-m-d H:i:s', strtotime($report_data['generated_at'])) ?><br>
+            Data for: <?= htmlspecialchars($report_data['report_date']) ?>
         </div>
     </div>
 
-    <!-- Alpine.js Component -->
     <script>
-        function modulationReport() {
-            return {
-                searchTerm: '',
-                deviceFilter: '',
-                hopFilter: '',
-                sortField: 'hops',
-                sortDirection: 'desc',
-                currentPage: 1,
-                itemsPerPage: 20,
-                selectedRow: null,
-                autoRefresh: '<?= $report_date ?>' === '<?= date('Y-m-d') ?>',
-                
-                data: <?= json_encode($report_data['summary']['top_hoppers']) ?>,
-                
-                get filteredData() {
-                    let filtered = this.data;
-                    
-                    // Search filter
-                    if (this.searchTerm) {
-                        const search = this.searchTerm.toLowerCase();
-                        filtered = filtered.filter(row => 
-                            row.cmts.toLowerCase().includes(search) || 
-                            row.upstream.toString().includes(search)
-                        );
-                    }
-                    
-                    // Device filter
-                    if (this.deviceFilter) {
-                        filtered = filtered.filter(row => 
-                            row.cmts.startsWith(this.deviceFilter)
-                        );
-                    }
-                    
-                    // Hop filter
-                    if (this.hopFilter) {
-                        filtered = filtered.filter(row => {
-                            if (this.hopFilter === 'high') return row.hops > 50;
-                            if (this.hopFilter === 'medium') return row.hops >= 10 && row.hops <= 50;
-                            if (this.hopFilter === 'low') return row.hops < 10;
-                            return true;
-                        });
-                    }
-                    
-                    // Sort
-                    filtered.sort((a, b) => {
-                        let aVal = a[this.sortField];
-                        let bVal = b[this.sortField];
-                        
-                        if (typeof aVal === 'string') {
-                            aVal = aVal.toLowerCase();
-                            bVal = bVal.toLowerCase();
-                        }
-                        
-                        if (this.sortDirection === 'asc') {
-                            return aVal > bVal ? 1 : -1;
-                        } else {
-                            return aVal < bVal ? 1 : -1;
-                        }
-                    });
-                    
-                    // Pagination
-                    const start = (this.currentPage - 1) * this.itemsPerPage;
-                    return filtered.slice(start, start + this.itemsPerPage);
-                },
-                
-                sortBy(field) {
-                    if (this.sortField === field) {
-                        this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc';
-                    } else {
-                        this.sortField = field;
-                        this.sortDirection = 'desc';
-                    }
-                    this.currentPage = 1;
-                },
-                
-                getDeviceColor(cmts) {
-                    if (cmts.startsWith('CCAP0')) return 'bg-blue-500';
-                    if (cmts.startsWith('CCAP1')) return 'bg-green-500';
-                    if (cmts.startsWith('CCAP2')) return 'bg-purple-500';
-                    return 'bg-gray-500';
-                },
-                
-                getHopBadgeColor(hops) {
-                    if (hops > 50) return 'bg-red-100 text-red-800';
-                    if (hops > 20) return 'bg-orange-100 text-orange-800';
-                    if (hops > 10) return 'bg-yellow-100 text-yellow-800';
-                    return 'bg-green-100 text-green-800';
-                },
-                
-                init() {
-                    // Auto-refresh every 5 minutes for today's report
-                    if (this.autoRefresh) {
-                        setTimeout(() => {
-                            location.reload();
-                        }, 300000);
-                    }
-                }
-            }
+        // Auto-refresh every 5 minutes if viewing today's report
+        if ('<?= $report_date ?>' === '<?= date('Y-m-d') ?>') {
+            setTimeout(function() {
+                location.reload();
+            }, 300000); // 5 minutes
         }
     </script>
 </body>

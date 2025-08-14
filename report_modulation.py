@@ -1,4 +1,4 @@
-#!/home/svdleer/python/venv/bin/python3
+#!/usr/bin/env python3
 
 """
 Modulation Report Generator - Python version
@@ -12,14 +12,12 @@ import sys
 import json
 import smtplib
 import pandas as pd
-import subprocess
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
 from multithreading_base import MultithreadingBase
 
 load_dotenv()
@@ -43,163 +41,98 @@ class ModulationReportGenerator(MultithreadingBase):
         self.from_email = os.getenv('FROM_EMAIL', 'silvester.vanderleer@vodafoneziggo.com')
         self.to_emails = os.getenv('TO_EMAILS', 'silvester.vanderleer@vodafoneziggo.com').split(',')
         
-        # Web deployment configuration
-        self.web_server = os.getenv('WEB_SERVER', 'appdb-sh.oss.local')
-        self.web_path = os.getenv('WEB_PATH', '/var/www/modulation/reports')
-        self.enable_web_deployment = os.getenv('ENABLE_WEB_DEPLOYMENT', 'true').lower() == 'true'
-        self.housekeeping_days = int(os.getenv('HOUSEKEEPING_DAYS', '30'))
-        
         # Create output directory if it doesn't exist
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # Log email configuration for debugging
-        self.logger.info(f"Email configuration: enable={self.enable_email}, host={self.smtp_host}, port={self.smtp_port}")
-        self.logger.info(f"From: {self.from_email}, To: {self.to_emails}")
-        
-        # Create SQLAlchemy engine for pandas compatibility
-        self._create_sqlalchemy_engine()
-        
-    def _create_sqlalchemy_engine(self):
-        """Create SQLAlchemy engine for pandas compatibility"""
-        try:
-            # Get database credentials from config
-            access_config = self.config['ACCESS']
-            
-            # Create SQLAlchemy connection string
-            connection_string = (
-                f"mysql+mysqlconnector://{access_config['USER']}:"
-                f"{access_config['PASSWORD']}@{access_config['HOST']}/"
-                f"{access_config['DATABASE']}"
-            )
-            
-            self.sqlalchemy_engine = create_engine(
-                connection_string,
-                pool_size=access_config['POOL_SIZE'],
-                max_overflow=0,
-                pool_pre_ping=True,
-                pool_recycle=3600
-            )
-            
-            self.logger.info("SQLAlchemy engine created successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create SQLAlchemy engine: {str(e)}")
-            # Fall back to None, will use mysql connector directly
-            self.sqlalchemy_engine = None
-        
-    def get_modulation_data_optimized(self, report_date=None):
+    def get_modulation_data_optimized(self):
         """
-        Get modulation data with optimized queries for specific date range
-        
-        Args:
-            report_date: Date string in 'YYYY-MM-DD' format. If None, uses previous day.
+        Get modulation data with optimized queries - much faster than original Perl version
         
         Instead of nested subqueries for every row, we:
-        1. Get data for specific date range in one query
+        1. Get all data in one query
         2. Process hops detection in Python with pandas
         3. Calculate percentages in bulk
         """
         try:
-            # Default to previous day if no date specified
-            if report_date is None:
-                report_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+            self.logger.info("Fetching modulation data with optimized query...")
             
-            self.logger.info(f"Fetching modulation data for date range: {report_date} 00:00 to 23:59")
-            
-            # OPTIMIZED QUERY with proper date filtering
-            # Get data from 00:00:00 to 23:59:59 of the specified date
-            date_filtered_query = """
+            # OPTIMIZED QUERY 1: Get all modulation data ordered by device/upstream/timestamp
+            # This replaces the complex nested query with a simple, fast query
+            base_query = """
                 SELECT cmts, upstream, modulation, timestamp
                 FROM modulation_new 
-                WHERE DATE(timestamp) = %s
                 ORDER BY cmts, upstream, timestamp
             """
             
-            # Execute query and get pandas DataFrame using SQLAlchemy engine
-            if self.sqlalchemy_engine:
-                # Use SQLAlchemy engine (preferred by pandas)
-                # SQLAlchemy expects params as a dictionary or tuple, not a list
-                df = pd.read_sql(date_filtered_query, self.sqlalchemy_engine, params=(report_date,))
-            else:
-                # Fall back to direct mysql connector (with warning)
-                conn = self.access_pool.get_connection()
-                df = pd.read_sql(date_filtered_query, conn, params=[report_date])
-                conn.close()
+            # Execute query and get pandas DataFrame
+            conn = self.access_pool.get_connection()
+            df = pd.read_sql(base_query, conn)
+            conn.close()
             
             if df.empty:
-                self.logger.warning(f"No modulation data found for {report_date}")
+                self.logger.warning("No modulation data found")
                 return pd.DataFrame()
             
-            self.logger.info(f"Retrieved {len(df)} modulation records for {report_date}")
+            self.logger.info(f"Retrieved {len(df)} modulation records")
             
             # OPTIMIZATION 2: Use pandas to detect modulation changes (hops) efficiently
             self.logger.info("Processing modulation hops...")
             
-            # MUCH FASTER approach: Use pandas vectorized operations instead of groupby.apply
-            # Sort all data by device, upstream, and timestamp
-            df = df.sort_values(['cmts', 'upstream', 'timestamp'])
+            # Group by device and upstream, then detect changes
+            def detect_hops(group):
+                """Detect modulation changes within a group"""
+                # Sort by timestamp to ensure correct order
+                group = group.sort_values('timestamp')
+                
+                # Mark rows where modulation changed from previous row
+                group['modulation_changed'] = group['modulation'].ne(group['modulation'].shift())
+                
+                # First row of each group is always considered a change
+                group.iloc[0, group.columns.get_loc('modulation_changed')] = True
+                
+                return group
             
-            # Create a unique identifier for each upstream
-            df['upstream_id'] = df['cmts'] + '_' + df['upstream'].astype(str)
+            # Apply hop detection to each upstream
+            df = df.groupby(['cmts', 'upstream']).apply(detect_hops).reset_index(drop=True)
             
-            # Detect modulation changes using vectorized shift operations
-            # Mark where upstream_id changes (new upstream starts)
-            df['new_upstream'] = df['upstream_id'] != df['upstream_id'].shift()
+            # Keep only rows where modulation actually changed (hops)
+            hops_df = df[df['modulation_changed']].copy()
             
-            # Mark where modulation changes within the same upstream
-            df['modulation_changed'] = (
-                df['new_upstream'] |  # First record of each upstream
-                ((df['modulation'] != df['modulation'].shift()) & ~df['new_upstream'])  # Modulation change within upstream
-            )
+            self.logger.info(f"Found {len(hops_df)} modulation hops")
             
-            # Count total hops per upstream (much faster than groupby)
-            hop_counts = df[df['modulation_changed']].groupby('upstream_id').size()
-            
-            self.logger.info(f"Found {df['modulation_changed'].sum()} total modulation hops")
-            
-            # OPTIMIZATION 3: Calculate statistics in bulk using pandas groupby (vectorized)
+            # OPTIMIZATION 3: Calculate statistics in bulk using pandas groupby
             self.logger.info("Calculating modulation statistics...")
             
-            # Calculate statistics using vectorized pandas operations
-            # Group by upstream_id for all calculations
-            upstream_groups = df.groupby('upstream_id')
+            # Group by cmts and upstream to get statistics
+            stats_list = []
             
-            # Get basic stats for each upstream
-            upstream_stats = pd.DataFrame({
-                'measurements': upstream_groups.size(),
-                'hops': hop_counts,
-                'cmts': upstream_groups['cmts'].first(),
-                'upstream': upstream_groups['upstream'].first()
-            }).fillna(0)  # Fill NaN hops with 0
-            
-            # Calculate modulation percentages using value_counts
-            modulation_stats_list = []
-            
-            for upstream_id, group in upstream_groups:
+            for (cmts, upstream), group in df.groupby(['cmts', 'upstream']):
+                # Count total measurements for this upstream
                 total_measurements = len(group)
+                
+                # Count hops for this upstream
+                hops = len(group[group['modulation_changed']])
+                
+                # Calculate percentages for each modulation type
                 modulation_counts = group['modulation'].value_counts()
                 
                 qam64_pct = round((modulation_counts.get('QAM64', 0) / total_measurements) * 100)
-                qam16_pct = round((modulation_counts.get('QAM16', 0) / total_measurements) * 100)
+                qam16_pct = round((modulation_counts.get('QAM16', 0) / total_measurements) * 100) 
                 qpsk_pct = round((modulation_counts.get('QPSK', 0) / total_measurements) * 100)
                 
-                modulation_stats_list.append({
-                    'upstream_id': upstream_id,
+                stats_list.append({
+                    'cmts': cmts,
+                    'upstream': upstream,
+                    'hops': hops,
                     'qam64_pct': qam64_pct,
                     'qam16_pct': qam16_pct,
-                    'qpsk_pct': qpsk_pct
+                    'qpsk_pct': qpsk_pct,
+                    'measurements': total_measurements
                 })
             
-            # Convert to DataFrame and merge with upstream_stats
-            modulation_stats_df = pd.DataFrame(modulation_stats_list).set_index('upstream_id')
-            result_df = upstream_stats.join(modulation_stats_df)
-            
-            # Convert hops to int and sort by hops descending, then by cmts
-            result_df['hops'] = result_df['hops'].astype(int)
+            # Convert to DataFrame and sort by hops descending, then by cmts
+            result_df = pd.DataFrame(stats_list)
             result_df = result_df.sort_values(['hops', 'cmts'], ascending=[False, True])
-            
-            # Select final columns
-            result_df = result_df[['cmts', 'upstream', 'hops', 'qam64_pct', 'qam16_pct', 'qpsk_pct', 'measurements']].reset_index(drop=True)
             
             self.logger.info(f"Generated statistics for {len(result_df)} upstream interfaces")
             return result_df
@@ -264,8 +197,7 @@ class ModulationReportGenerator(MultithreadingBase):
     def generate_csv_report(self, report_date=None):
         """Generate CSV report for the specified date"""
         if report_date is None:
-            # Default to previous day (yesterday)
-            report_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+            report_date = datetime.now().strftime('%Y-%m-%d')
             
         self.logger.info(f"Generating modulation report for {report_date}")
         
@@ -275,10 +207,10 @@ class ModulationReportGenerator(MultithreadingBase):
         if df is None:
             # Generate new report
             self.logger.info("Generating new report from database...")
-            df = self.get_modulation_data_optimized(report_date)
+            df = self.get_modulation_data_optimized()
             
             if df.empty:
-                self.logger.error(f"No data available for report on {report_date}")
+                self.logger.error("No data available for report")
                 return None
                 
             # Save to cache
@@ -306,10 +238,6 @@ class ModulationReportGenerator(MultithreadingBase):
             
         try:
             self.logger.info("Sending email report...")
-            self.logger.info(f"SMTP Host: {self.smtp_host}, Port: {self.smtp_port}")
-            self.logger.info(f"From: {self.from_email}")
-            self.logger.info(f"To: {self.to_emails}")
-            self.logger.info(f"CSV file: {csv_file}")
             
             # Create message
             msg = MIMEMultipart()
@@ -323,7 +251,7 @@ class ModulationReportGenerator(MultithreadingBase):
 Het meest recente modulation report is te vinden in de bijlage.
 
 Met vriendelijke groet,
-Modulation Scanner 
+Modulation Scanner (Python)
 
 Expert Engineer Access Engineering
 Network & Technology - Access & Transport
@@ -335,7 +263,6 @@ Deze e-mail is automatisch verzonden"""
             
             # Attach CSV file
             if csv_file and os.path.exists(csv_file):
-                self.logger.info(f"Attaching CSV file: {csv_file}")
                 with open(csv_file, "rb") as attachment:
                     part = MIMEBase('application', 'octet-stream')
                     part.set_payload(attachment.read())
@@ -343,53 +270,30 @@ Deze e-mail is automatisch verzonden"""
                 encoders.encode_base64(part)
                 part.add_header(
                     'Content-Disposition',
-                    f'attachment; filename=modulation_report_{report_date}.csv'
+                    f'attachment; filename= modulation_report_{report_date}.csv'
                 )
                 msg.attach(part)
-            else:
-                self.logger.warning(f"CSV file not found or invalid: {csv_file}")
             
-            # Send email with enhanced error handling
-            self.logger.info("Connecting to SMTP server...")
+            # Send email
             server = smtplib.SMTP(self.smtp_host, self.smtp_port)
-            
-            # Enable debugging for SMTP
-            server.set_debuglevel(1)
-            
-            self.logger.info("Sending email...")
-            send_result = server.sendmail(self.from_email, self.to_emails, msg.as_string())
+            server.sendmail(self.from_email, self.to_emails, msg.as_string())
             server.quit()
             
-            # Check if there were any rejected recipients
-            if send_result:
-                self.logger.warning(f"Some recipients were rejected: {send_result}")
-            else:
-                self.logger.info(f"Email sent successfully to {len(self.to_emails)} recipients: {self.to_emails}")
+            self.logger.info(f"Email sent successfully to {len(self.to_emails)} recipients")
             
-            # Log message details for debugging
-            self.logger.info(f"Email subject: {msg['Subject']}")
-            self.logger.info(f"Message size: {len(msg.as_string())} bytes")
-            
-        except smtplib.SMTPException as e:
-            self.logger.error(f"SMTP Error: {str(e)}")
-            self.logger.error(f"Error type: {type(e).__name__}")
         except Exception as e:
             self.logger.error(f"Failed to send email: {str(e)}")
-            self.logger.error(f"Error type: {type(e).__name__}")
-            import traceback
-            self.logger.error(f"Full traceback: {traceback.format_exc()}")
     
     def generate_json_for_web(self, report_date=None):
         """Generate JSON file optimized for web display"""
         if report_date is None:
-            # Default to previous day (yesterday)
-            report_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+            report_date = datetime.now().strftime('%Y-%m-%d')
         
         # Get report data (from cache if available)
         df = self.load_cached_report(report_date)
         
         if df is None:
-            df = self.get_modulation_data_optimized(report_date)
+            df = self.get_modulation_data_optimized()
             if not df.empty:
                 self.save_cached_report(df, report_date)
         
@@ -403,7 +307,7 @@ Deze e-mail is automatisch verzonden"""
             'total_upstreams': len(df),
             'total_hops': int(df['hops'].sum()),
             'summary': {
-                'top_hoppers': df.to_dict('records'),  # Include ALL devices, not just top 10
+                'top_hoppers': df.head(10).to_dict('records'),
                 'by_device_type': self._get_device_type_summary(df),
                 'modulation_distribution': self._get_modulation_distribution(df)
             },
@@ -416,183 +320,7 @@ Deze e-mail is automatisch verzonden"""
             json.dump(web_data, f, indent=2)
         
         self.logger.info(f"Web JSON report generated: {json_file}")
-        
-        # Deploy to web server if enabled
-        if self.enable_web_deployment:
-            # Ensure web directory exists first
-            self.ensure_web_directory()
-            self.deploy_to_web_server(json_file, report_date)
-            
         return json_file
-    
-    def deploy_to_web_server(self, json_file, report_date):
-        """Deploy JSON file to web server with proper permissions and housekeeping"""
-        if not json_file or not os.path.exists(json_file):
-            self.logger.error("JSON file not found for web deployment")
-            return False
-            
-        try:
-            self.logger.info(f"Deploying JSON report to web server {self.web_server}...")
-            
-            # Step 1: Copy file to temporary location first (user's home directory)
-            temp_file = f"/tmp/modulation_report_{report_date}_web.json"
-            scp_command = [
-                'scp', 
-                json_file, 
-                f"{self.web_server}:{temp_file}"
-            ]
-            
-            self.logger.info(f"Running: {' '.join(scp_command)}")
-            result = subprocess.run(scp_command, capture_output=True, text=True, timeout=30)
-            
-            if result.returncode != 0:
-                self.logger.error(f"SCP failed: {result.stderr}")
-                return False
-            
-            self.logger.info("File copied to temporary location on web server")
-            
-            # Step 2: Move file to final location with sudo and set proper ownership
-            final_file = f"{self.web_path}/modulation_report_{report_date}_web.json"
-            deployment_commands = [
-                f"sudo mkdir -p {self.web_path}",
-                f"sudo mv {temp_file} {final_file}",
-                f"sudo chown www-data:www-data {final_file}",
-                f"sudo chmod 644 {final_file}"
-            ]
-            
-            for cmd in deployment_commands:
-                ssh_command = ['ssh', self.web_server, cmd]
-                self.logger.info(f"Running: {cmd}")
-                
-                result = subprocess.run(ssh_command, capture_output=True, text=True, timeout=15)
-                if result.returncode != 0:
-                    self.logger.error(f"Command failed: {cmd} - {result.stderr}")
-                    # Try to clean up temp file if something fails
-                    cleanup_cmd = ['ssh', self.web_server, f"rm -f {temp_file}"]
-                    subprocess.run(cleanup_cmd, capture_output=True, text=True, timeout=10)
-                    return False
-                else:
-                    self.logger.info(f"Successfully executed: {cmd}")
-            
-            # Step 3: Housekeeping - remove old files
-            self.perform_web_housekeeping()
-            
-            self.logger.info("Web deployment completed successfully")
-            return True
-            
-        except subprocess.TimeoutExpired:
-            self.logger.error("Web deployment timed out")
-            return False
-        except Exception as e:
-            self.logger.error(f"Web deployment failed: {str(e)}")
-            return False
-    
-    def perform_web_housekeeping(self):
-        """Remove old JSON files from web server to prevent disk space issues"""
-        try:
-            self.logger.info(f"Performing housekeeping on web server (keeping last {self.housekeeping_days} days)...")
-            
-            # Command to find and remove old files
-            cleanup_command = (
-                f"find {self.web_path} -name 'modulation_report_*_web.json' "
-                f"-type f -mtime +{self.housekeeping_days} -delete"
-            )
-            
-            ssh_command = ['ssh', self.web_server, cleanup_command]
-            self.logger.info(f"Running housekeeping: {cleanup_command}")
-            
-            result = subprocess.run(ssh_command, capture_output=True, text=True, timeout=30)
-            
-            if result.returncode == 0:
-                self.logger.info("Housekeeping completed successfully")
-                if result.stdout.strip():
-                    self.logger.info(f"Housekeeping output: {result.stdout.strip()}")
-            else:
-                self.logger.warning(f"Housekeeping warning: {result.stderr}")
-                
-        except subprocess.TimeoutExpired:
-            self.logger.error("Housekeeping timed out")
-        except Exception as e:
-            self.logger.error(f"Housekeeping failed: {str(e)}")
-    
-    def create_web_symlink(self, report_date):
-        """Create a symlink for 'latest' report on web server"""
-        try:
-            latest_link = f"{self.web_path}/modulation_report_latest_web.json"
-            target_file = f"modulation_report_{report_date}_web.json"
-            
-            symlink_commands = [
-                f"cd {self.web_path}",
-                f"sudo rm -f modulation_report_latest_web.json",
-                f"sudo ln -s {target_file} modulation_report_latest_web.json",
-                f"sudo chown -h www-data:www-data modulation_report_latest_web.json"
-            ]
-            
-            # Execute commands as a single compound command
-            combined_command = " && ".join(symlink_commands)
-            ssh_command = ['ssh', self.web_server, combined_command]
-            
-            self.logger.info("Creating 'latest' symlink on web server...")
-            result = subprocess.run(ssh_command, capture_output=True, text=True, timeout=15)
-            
-            if result.returncode == 0:
-                self.logger.info("Latest symlink created successfully")
-            else:
-                self.logger.warning(f"Symlink creation warning: {result.stderr}")
-                
-        except Exception as e:
-            self.logger.error(f"Symlink creation failed: {str(e)}")
-    
-    def perform_web_housekeeping(self):
-        """Remove old JSON files from web server to prevent disk space issues"""
-        try:
-            self.logger.info(f"Performing housekeeping on web server (keeping last {self.housekeeping_days} days)...")
-            
-            # Command to find and remove old files with sudo
-            cleanup_command = (
-                f"sudo find {self.web_path} -name 'modulation_report_*_web.json' "
-                f"-type f -mtime +{self.housekeeping_days} -delete"
-            )
-            
-            ssh_command = ['ssh', self.web_server, cleanup_command]
-            self.logger.info(f"Running housekeeping: {cleanup_command}")
-            
-            result = subprocess.run(ssh_command, capture_output=True, text=True, timeout=30)
-            
-            if result.returncode == 0:
-                self.logger.info("Housekeeping completed successfully")
-                if result.stdout.strip():
-                    self.logger.info(f"Housekeeping output: {result.stdout.strip()}")
-            else:
-                self.logger.warning(f"Housekeeping warning: {result.stderr}")
-                
-        except subprocess.TimeoutExpired:
-            self.logger.error("Housekeeping timed out")
-        except Exception as e:
-            self.logger.error(f"Housekeeping failed: {str(e)}")
-    
-    def ensure_web_directory(self):
-        """Ensure web directory exists with proper permissions"""
-        try:
-            self.logger.info("Ensuring web directory exists with proper permissions...")
-            
-            setup_commands = [
-                f"sudo mkdir -p {self.web_path}",
-                f"sudo chown www-data:www-data {self.web_path}",
-                f"sudo chmod 755 {self.web_path}"
-            ]
-            
-            for cmd in setup_commands:
-                ssh_command = ['ssh', self.web_server, cmd]
-                result = subprocess.run(ssh_command, capture_output=True, text=True, timeout=15)
-                
-                if result.returncode != 0:
-                    self.logger.warning(f"Directory setup warning: {cmd} - {result.stderr}")
-                else:
-                    self.logger.info(f"Successfully executed: {cmd}")
-                    
-        except Exception as e:
-            self.logger.error(f"Directory setup failed: {str(e)}")
     
     def _get_device_type_summary(self, df):
         """Get summary statistics by device type"""
@@ -646,53 +374,10 @@ Deze e-mail is automatisch verzonden"""
             self.logger.warning(f"Failed to generate modulation distribution: {str(e)}")
             return {}
     
-    def run_web_only_report(self, report_date=None):
-        """Generate web JSON and copy as normal file, no email"""
-        if report_date is None:
-            # Default to previous day (yesterday)
-            report_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-        
-        try:
-            self.logger.info(f"Starting web-only report generation for {report_date}")
-            
-            # Generate web JSON
-            web_json_file = self.generate_json_for_web(report_date)
-            
-            if not web_json_file:
-                return {
-                    'success': False,
-                    'error': 'Failed to generate web JSON',
-                    'report_date': report_date
-                }
-            
-            # Copy web JSON as normal file
-            import shutil
-            normal_json_file = os.path.join(self.output_dir, f"modulation_report_{report_date}.json")
-            shutil.copy2(web_json_file, normal_json_file)
-            
-            self.logger.info(f"Web JSON copied as normal file: {normal_json_file}")
-            self.logger.info("Web-only report generation completed successfully (no email sent)")
-            
-            return {
-                'web_json_file': web_json_file,
-                'normal_json_file': normal_json_file,
-                'report_date': report_date,
-                'success': True
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Web-only report generation failed: {str(e)}")
-            return {
-                'success': False,
-                'error': str(e),
-                'report_date': report_date
-            }
-
     def run_full_report(self, report_date=None):
         """Generate complete report with CSV, JSON and email"""
         if report_date is None:
-            # Default to previous day (yesterday)
-            report_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+            report_date = datetime.now().strftime('%Y-%m-%d')
         
         try:
             self.logger.info(f"Starting full report generation for {report_date}")
@@ -702,10 +387,6 @@ Deze e-mail is automatisch verzonden"""
             
             # Generate web JSON
             json_file = self.generate_json_for_web(report_date)
-            
-            # Create latest symlink on web server
-            if json_file and self.enable_web_deployment:
-                self.create_web_symlink(report_date)
             
             # Send email if enabled
             if csv_file:
@@ -733,74 +414,11 @@ if __name__ == "__main__":
     Run report generator
     
     Usage:
-        python report_modulation.py                    # Today's report
-        python report_modulation.py 2025-08-11        # Specific date
-        python report_modulation.py --json-only       # Only generate web JSON
-        python report_modulation.py --csv-only        # Only generate CSV
-        python report_modulation.py --web-only        # Generate web JSON and copy as normal file, no email
+        python modulation_report_generator.py                    # Today's report
+        python modulation_report_generator.py 2025-08-11        # Specific date
+        python modulation_report_generator.py --json-only       # Only generate web JSON
+        python modulation_report_generator.py --csv-only        # Only generate CSV
     """
-    
-    def show_help():
-        """Display help information"""
-        help_text = """
-Modulation Report Generator - Python version
-Optimized replacement for reportmodulation.pl
-
-USAGE:
-    python report_modulation.py [OPTIONS] [DATE]
-
-ARGUMENTS:
-    DATE                    Report date in YYYY-MM-DD format (default: yesterday)
-
-OPTIONS:
-    --help, -h             Show this help message and exit
-    --json-only            Generate only web JSON file (no CSV, no email)
-    --csv-only             Generate only CSV file (no JSON, no email)  
-    --web-only             Generate web JSON and copy as normal file (no email)
-    
-EXAMPLES:
-    python report_modulation.py
-        Generate full report for yesterday (CSV, JSON, email, web deployment)
-        
-    python report_modulation.py 2025-08-12
-        Generate full report for specific date
-        
-    python report_modulation.py --json-only
-        Generate only web JSON for yesterday
-        
-    python report_modulation.py --csv-only 2025-08-12
-        Generate only CSV for specific date
-        
-    python report_modulation.py --web-only
-        Generate web JSON and copy as normal file, no email sent
-
-ENVIRONMENT VARIABLES:
-    REPORT_OUTPUT_DIR      Output directory for reports (default: reports)
-    ENABLE_EMAIL_REPORTS   Enable/disable email reports (default: true)
-    ENABLE_REPORT_CACHE    Enable/disable report caching (default: true)
-    CACHE_DURATION_HOURS   Cache duration in hours (default: 1)
-    SMTP_HOST             SMTP server hostname (default: localhost)
-    SMTP_PORT             SMTP server port (default: 25)
-    FROM_EMAIL            From email address
-    TO_EMAILS             Comma-separated list of recipient emails
-    WEB_SERVER            Web server hostname for deployment
-    WEB_PATH              Web server path for JSON files
-    ENABLE_WEB_DEPLOYMENT Enable/disable web deployment (default: true)
-    HOUSEKEEPING_DAYS     Days to keep old files on web server (default: 30)
-
-OUTPUT FILES:
-    modulation_report_YYYY-MM-DD.csv           CSV report file
-    modulation_report_YYYY-MM-DD_web.json     Web-optimized JSON file
-    modulation_report_YYYY-MM-DD.json         Normal JSON file (--web-only)
-    modulation_report_YYYY-MM-DD_cached.json  Cached report data
-
-DESCRIPTION:
-    This tool generates modulation reports from the modulation database.
-    It analyzes modulation hops and generates statistics for upstream interfaces.
-    Reports can be generated in CSV and JSON formats, sent via email,
-    and deployed to a web server for visualization.
-        """
-        print(help_text)
     
     try:
         generator = ModulationReportGenerator()
@@ -809,54 +427,23 @@ DESCRIPTION:
         report_date = None
         json_only = False
         csv_only = False
-        web_only = False
-        show_help_flag = False
         
         if len(sys.argv) > 1:
             for arg in sys.argv[1:]:
-                if arg in ['--help', '-h']:
-                    show_help_flag = True
-                elif arg == '--json-only':
+                if arg == '--json-only':
                     json_only = True
                 elif arg == '--csv-only':
                     csv_only = True
-                elif arg == '--web-only':
-                    web_only = True
                 elif arg.startswith('--'):
-                    print(f"Unknown option: {arg}")
-                    print("Use --help for usage information")
-                    sys.exit(1)
+                    continue
                 else:
                     # Assume it's a date
                     report_date = arg
         
-        if show_help_flag:
-            show_help()
-            sys.exit(0)
-        
         if json_only:
-            result = generator.generate_json_for_web(report_date)
-            if result:
-                print(f"Web JSON generated: {result}")
-            else:
-                print("Failed to generate web JSON")
-                sys.exit(1)
+            generator.generate_json_for_web(report_date)
         elif csv_only:
-            result = generator.generate_csv_report(report_date)
-            if result:
-                print(f"CSV generated: {result}")
-            else:
-                print("Failed to generate CSV")
-                sys.exit(1)
-        elif web_only:
-            result = generator.run_web_only_report(report_date)
-            if result['success']:
-                print(f"Web-only report generated successfully for {result['report_date']}")
-                print(f"Web JSON: {result['web_json_file']}")
-                print(f"Normal JSON: {result['normal_json_file']}")
-            else:
-                print(f"Web-only report generation failed: {result['error']}")
-                sys.exit(1)
+            generator.generate_csv_report(report_date)
         else:
             # Full report
             result = generator.run_full_report(report_date)
